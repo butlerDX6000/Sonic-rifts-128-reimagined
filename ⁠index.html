@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>3D FPS Target Trainer</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        #ui {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.8);
+            pointer-events: none;
+            user-select: none;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 10px;
+            height: 10px;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: rgba(0, 255, 0, 0.8);
+        }
+        #crosshair::before { top: 4px; left: -10px; width: 30px; height: 2px; }
+        #crosshair::after { top: -10px; left: 4px; width: 2px; height: 30px; }
+        
+        #instructions {
+            position: absolute;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            text-align: center;
+            cursor: pointer;
+        }
+        #instructions h1 { font-size: 48px; margin-bottom: 10px; color: #00ffcc; }
+        #instructions p { font-size: 20px; color: #ccc; }
+    </style>
+</head>
+<body>
+
+    <div id="ui">Score: <span id="score">0</span></div>
+    <div id="crosshair"></div>
+    
+    <div id="instructions">
+        <h1>CLICK TO PLAY</h1>
+        <p>WASD = Move | Mouse = Look | Left Click = Shoot</p>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        // --- Game Setup ---
+        let score = 0;
+        const scoreElement = document.getElementById('score');
+        const instructions = document.getElementById('instructions');
+        
+        // --- Three.js Essentials ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x111424);
+        scene.fog = new THREE.FogExp2(0x111424, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // --- Lights ---
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(20, 40, 20);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // --- Environment (The Arena) ---
+        // Floor
+        const floorGeo = new THREE.PlaneGeometry(100, 100);
+        const floorMat = new THREE.MeshStandardMaterial({ color: 0x222533, roughness: 0.8 });
+        const floor = new THREE.Mesh(floorGeo, floorMat);
+        floor.rotation.x = -Math.PI / 2;
+        floor.receiveShadow = true;
+        scene.add(floor);
+
+        // Pillars/Obstacles
+        const pillars = [];
+        const pillarGeo = new THREE.BoxGeometry(4, 15, 4);
+        const pillarMat = new THREE.MeshStandardMaterial({ color: 0x393e56, roughness: 0.5 });
+        
+        for(let i = 0; i < 15; i++) {
+            const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+            pillar.position.set(
+                (Math.random() - 0.5) * 80,
+                7.5,
+                (Math.random() - 0.5) * 80
+            );
+            pillar.castShadow = true;
+            pillar.receiveShadow = true;
+            scene.add(pillar);
+            pillars.push(pillar);
+        }
+
+        // --- The Gun (Player Weapon Placeholder) ---
+        const gunGroup = new THREE.Group();
+        const barrelGeo = new THREE.BoxGeometry(0.3, 0.3, 1.5);
+        const gunMat = new THREE.MeshStandardMaterial({ color: 0x555555, metalness: 0.8, roughness: 0.2 });
+        const barrel = new THREE.Mesh(barrelGeo, gunMat);
+        barrel.position.set(0.5, -0.5, -1.5); // Position relative to camera
+        gunGroup.add(barrel);
+        scene.add(gunGroup);
+
+        // --- Targets ---
+        const targets = [];
+        const targetGeo = new THREE.SphereGeometry(1.5, 32, 32);
+        const targetMat = new THREE.MeshStandardMaterial({ color: 0xff3366, emissive: 0x330011 });
+
+        function spawnTarget() {
+            const target = new THREE.Mesh(targetGeo, targetMat);
+            target.position.set(
+                (Math.random() - 0.5) * 60,
+                2 + Math.random() * 8,
+                (Math.random() - 0.5) * 60
+            );
+            // Give it a random movement velocity
+            target.userData = {
+                dirX: (Math.random() - 0.5) * 0.1,
+                dirY: (Math.random() - 0.5) * 0.05,
+                dirZ: (Math.random() - 0.5) * 0.1
+            };
+            scene.add(target);
+            targets.push(target);
+        }
+
+        // Spawn initial targets
+        for(let i = 0; i < 8; i++) spawnTarget();
+
+        // --- Controls & Input ---
+        camera.position.set(0, 2, 0);
+
+        let moveForward = false;
+        let moveBackward = false;
+        let moveLeft = false;
+        let moveRight = false;
+
+        const velocity = new THREE.Vector3();
+        const direction = new THREE.Vector3();
+        const clock = new THREE.Clock();
+
+        // Pointer Lock Mechanics
+        instructions.addEventListener('click', () => {
+            document.body.requestPointerLock();
+        });
+
+        document.addEventListener('pointerlockchange', () => {
+            if (document.pointerLockElement === document.body) {
+                instructions.style.display = 'none';
+            } else {
+                instructions.style.display = 'flex';
+            }
+        });
+
+        // Mouse Look
+        document.addEventListener('mousemove', (event) => {
+            if (document.pointerLockElement !== document.body) return;
+
+            camera.rotation.y -= event.movementX * 0.002;
+            camera.rotation.x -= event.movementY * 0.002;
+
+            // Clamp vertical look
+            camera.rotation.x = Math.max(-Math.PI / 2.5, Math.min(Math.PI / 2.5, camera.rotation.x));
+        });
+
+        // Keyboard Movement Controls
+        document.addEventListener('keydown', (e) => {
+            switch (e.code) {
+                case 'KeyW': moveForward = true; break;
+                case 'KeyS': moveBackward = true; break;
+                case 'KeyA': moveLeft = true; break;
+                case 'KeyD': moveRight = true; break;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            switch (e.code) {
+                case 'KeyW': moveForward = false; break;
+                case 'KeyS': moveBackward = false; break;
+                case 'KeyA': moveLeft = false; break;
+                case 'KeyD': moveRight = false; break;
+            }
+        });
+
+        // --- Shooting Mechanics (Raycasting) ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2(0, 0); // Center of the screen
+
+        document.addEventListener('mousedown', (e) => {
+            if (document.pointerLockElement !== document.body) return;
+            if (e.button !== 0) return; // Left click only
+
+            // Gun recoil animation trigger
+            barrel.position.z = -1.2; 
+
+            // Update raycaster based on camera center
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(targets);
+
+            if (intersects.length > 0) {
+                const hitTarget = intersects[0].object;
+                
+                // Visual effect: flash target before removing
+                hitTarget.material.color.setHex(0xffffff);
+                
+                setTimeout(() => {
+                    scene.remove(hitTarget);
+                    const index = targets.indexOf(hitTarget);
+                    if (index > -1) targets.splice(index, 1);
+                    
+                    score += 10;
+                    scoreElement.innerText = score;
+                    
+                    // Spawn a replacement target
+                    spawnTarget();
+                }, 50);
+            }
+        });
+
+        // --- Window Resize ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // --- Game Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const delta = clock.getDelta();
+
+            if (document.pointerLockElement === document.body) {
+                // Movement damping/friction
+                velocity.x -= velocity.x * 10.0 * delta;
+                velocity.z -= velocity.z * 10.0 * delta;
+
+                direction.z = Number(moveForward) - Number(moveBackward);
+                direction.x = Number(moveRight) - Number(moveLeft);
+                direction.normalize();
+
+                // Apply movement based on camera orientation
+                const camDirection = new THREE.Vector3();
+                camera.getWorldDirection(camDirection);
+                
+                if (moveForward || moveBackward) {
+                    velocity.z -= direction.z * 40.0 * delta;
+                }
+                if (moveLeft || moveRight) {
+                    // Get side vector
+                    const sideVector = new THREE.Vector3(-camDirection.z, 0, camDirection.x).normalize();
+                    camera.position.addScaledVector(sideVector, direction.x * 15.0 * delta);
+                }
+
+                // Move forward/backward ignoring Y axis height
+                camera.position.x += camDirection.x * -velocity.z * delta;
+                camera.position.z += camDirection.z * -velocity.z * delta;
+                
+                // Keep player within boundaries
+                camera.position.x = Math.max(-45, Math.min(45, camera.position.x));
+                camera.position.z = Math.max(-45, Math.min(45, camera.position.z));
+
+                // Make the gun mesh follow the camera position and rotation
+                gunGroup.position.copy(camera.position);
+                gunGroup.rotation.copy(camera.rotation);
+                
+                // Smoothly return gun from recoil
+                barrel.position.z = THREE.MathUtils.lerp(barrel.position.z, -1.5, 0.2);
+
+                // Animate Targets (Move them around and bounce them off invisible walls)
+                targets.forEach(target => {
+                    target.position.x += target.userData.dirX;
+                    target.position.y += target.userData.dirY;
+                    target.position.z += target.userData.dirZ;
+
+                    if (Math.abs(target.position.x) > 40) target.userData.dirX *= -1;
+                    if (target.position.y > 15 || target.position.y < 2) target.userData.dirY *= -1;
+                    if (Math.abs(target.position.z) > 40) target.userData.dirZ *= -1;
+                });
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Start the engine
+        camera.rotation.order = 'YXZ'; // Prevents weird camera flipping
+        animate();
+    </script>
+</body>
+</html>
